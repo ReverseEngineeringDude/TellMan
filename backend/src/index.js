@@ -51,6 +51,7 @@ async function main() {
   const app = createServer(bot);
   const server = app.listen(PORT, () => {
     console.log(`🌐 HTTP API Server running at http://localhost:${PORT}`);
+    console.log(`   - GET  /health                  -> Web Interface & Health Check Dashboard`);
     console.log(`   - GET  /api/stats               -> View bot & client statistics`);
     console.log(`   - GET  /api/clients             -> View registered client list`);
     console.log(`   - GET  /api/channel-videos      -> View indexed channel videos`);

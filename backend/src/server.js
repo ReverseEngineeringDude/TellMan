@@ -15,6 +15,8 @@ import {
   broadcastRandomVideo,
   clearChannelVideos
 } from './channelManager.js';
+import { isFirestoreEnabled } from './firebase.js';
+import { renderHealthPage } from './healthPage.js';
 
 export function createServer(bot) {
   const app = express();
@@ -22,16 +24,61 @@ export function createServer(bot) {
   app.use(cors());
   app.use(express.json());
 
-  // Health and stats endpoint
-  app.get('/', (req, res) => {
-    res.json({
-      status: 'online',
-      service: 'TellMan Telegram Channel Random Video Bot API',
-      version: '1.1.0',
-      stats: getStats(),
+  // Compile unified health data
+  const getHealthData = () => {
+    const memory = process.memoryUsage();
+    return {
+      status: 'healthy',
+      service: 'TellMan Telegram Channel Random Video Bot',
+      version: '1.2.0',
+      timestamp: new Date().toISOString(),
+      uptimeSeconds: Math.floor(process.uptime()),
+      botInfo: {
+        status: 'online',
+        username: bot?.botInfo?.username || 'chugan_video_bot',
+        firstName: bot?.botInfo?.first_name || 'Chugan bot',
+        id: bot?.botInfo?.id || '6557438353',
+        channelId: process.env.CHANNEL_ID || '-1003865751619'
+      },
+      database: {
+        enabled: isFirestoreEnabled(),
+        provider: isFirestoreEnabled() ? 'Google Cloud Firestore' : 'Local JSON Storage',
+        projectId: process.env.FIREBASE_PROJECT_ID || 'tellman-1a7ea'
+      },
       channelVideosCount: getChannelVideoCount(),
-      videoConfig: getVideoConfig()
-    });
+      stats: getStats(),
+      serverEnv: {
+        port: process.env.PORT || 3001,
+        nodeVersion: process.version,
+        memoryRss: `${Math.round(memory.rss / 1024 / 1024)} MB`,
+        memoryHeap: `${Math.round(memory.heapUsed / 1024 / 1024)} MB`,
+        environment: process.env.NODE_ENV || 'production'
+      }
+    };
+  };
+
+  // Dedicated Web Interface & API for Health Checks (e.g. tellman.onrender.com/health)
+  app.get('/health', (req, res) => {
+    const data = getHealthData();
+
+    // If client explicitly requests JSON (API client, curl, uptime monitor)
+    if (req.query.format === 'json' || req.query.json === '1' || (req.headers.accept && req.headers.accept.includes('application/json') && !req.headers.accept.includes('text/html'))) {
+      return res.json(data);
+    }
+
+    // Default to rich Web Interface Dashboard
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(renderHealthPage(data));
+  });
+
+  // Root endpoint: Serves web interface if requested in browser, or JSON summary
+  app.get('/', (req, res) => {
+    const data = getHealthData();
+    if (req.accepts('html') && req.query.format !== 'json') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.send(renderHealthPage(data));
+    }
+    res.json(data);
   });
 
   // Get bot statistics
