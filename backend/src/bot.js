@@ -46,9 +46,21 @@ export function createBot(token) {
   // Main Persistent Keyboard Menu
   const mainKeyboard = Markup.keyboard([
     ['🎲 Random Video', '⭐ 1-Day Pass'],
-    ['📊 My Stats', 'ℹ️ Channel Info'],
+    ['📊 My Stats', '📩 Request'],
     ['❓ Help']
   ]).resize();
+
+  // Helper to escape HTML characters
+  const escapeHtml = (str) => {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  };
+
+  // In-memory conversation state for requests and admin replies
+  const userSessions = new Map();
 
   // Middleware: Automatically register any user who messages the bot
   bot.use(async (ctx, next) => {
@@ -198,7 +210,7 @@ I deliver high-definition random videos directly from our Telegram channel.
     }
 
     inlineButtons.push([
-      Markup.button.callback('ℹ️ Channel Info', 'action_channel_info'),
+      Markup.button.callback('📩 Request Admin', 'action_request'),
       Markup.button.callback('📊 My Stats', 'action_stats')
     ]);
 
@@ -236,7 +248,7 @@ Unlock <b>24 hours of unlimited random channel videos</b> with our 1-Day VIP Pas
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [Markup.button.callback(`⭐ Unlock 1-Day Pass (${starsPrice} Stars)`, 'action_buy_stars_1day')],
-          [Markup.button.callback('ℹ️ Channel Info', 'action_channel_info')]
+          [Markup.button.callback('📩 Request Admin', 'action_request')]
         ])
       });
     }
@@ -389,32 +401,166 @@ Click below to purchase using your Telegram Stars balance:
     }
   });
 
-  // /channel command & button
-  const showChannelInfo = async (ctx) => {
-    const videoCount = getChannelVideoCount();
-    const channelName = configuredChannel || 'Not specified in .env';
+  // ==========================================
+  // REQUEST / DOUBT & ADMIN ASSISTANCE SYSTEM
+  // ==========================================
 
-    const infoMsg = `
-📢 <b>Channel Information</b>
+  // Prompt the user to enter their request or question
+  const handleRequestPrompt = async (ctx) => {
+    userSessions.set(ctx.from.id, { state: 'WAITING_REQUEST' });
 
-• <b>Configured Channel:</b> <code>${channelName}</code>
-• <b>Indexed Channel Videos:</b> <code>${videoCount}</code>
+    const msg = `
+📩 <b>Request a Video or Ask Any Doubt</b>
 
-✨ <i>Every time you press <b>🎲 Random Video</b>, you will receive a random video selected from the channel!</i>
+Looking for a specific video, having payment issues, or have any question?
+
+✍️ <b>Type and send your message below!</b>
+<i>You can send text, or attach a photo / video clip. Your message will be sent directly to the admin.</i>
+
+<i>Tap /cancel anytime to return to the main menu.</i>
 `.trim();
 
-    const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('🎲 Get Random Video', 'action_random_video')]
-    ]);
-
-    await ctx.reply(infoMsg, { parse_mode: 'HTML', ...keyboard });
+    await ctx.reply(msg, {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('❌ Cancel Request', 'action_cancel_request')]
+      ])
+    });
   };
 
-  bot.command(['channel', 'channel_info'], showChannelInfo);
-  bot.hears('ℹ️ Channel Info', showChannelInfo);
-  bot.action('action_channel_info', async (ctx) => {
+  // Forward the submitted request to admin
+  const processUserRequest = async (ctx, userMessageText) => {
+    userSessions.delete(ctx.from.id);
+
+    // Confirm to the user
+    await ctx.reply(
+      `✅ <b>Request Submitted to Admin!</b>\n\n` +
+      `Your message has been delivered to our admin. We will review it and reply back to you here shortly! 🙏`,
+      {
+        parse_mode: 'HTML',
+        ...mainKeyboard
+      }
+    );
+
+    // Send notification to admin
+    if (adminChatId) {
+      const fromUser = ctx.from;
+      const userName = [fromUser.first_name, fromUser.last_name].filter(Boolean).join(' ');
+      const userHandle = fromUser.username ? `@${fromUser.username}` : 'No username';
+
+      const adminAlert = `
+📩 <b>New User Request / Doubt</b>
+
+👤 <b>From:</b> <b>${escapeHtml(userName)}</b> (${userHandle})
+🆔 <b>User ID:</b> <code>${fromUser.id}</code>
+🕒 <b>Time:</b> ${new Date().toLocaleString()}
+
+💬 <b>Message:</b>
+${escapeHtml(userMessageText || '(Media attached)')}
+`.trim();
+
+      try {
+        await bot.telegram.sendMessage(adminChatId, adminAlert, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('↩️ Reply to User', `admin_reply_${fromUser.id}`)]
+          ])
+        });
+
+        // Forward any media sent with the request
+        if (ctx.message && (ctx.message.photo || ctx.message.video || ctx.message.document || ctx.message.voice || ctx.message.audio)) {
+          await bot.telegram.forwardMessage(adminChatId, ctx.chat.id, ctx.message.message_id);
+        }
+      } catch (err) {
+        console.error('[AdminNotifyError] Failed to forward request to admin:', err.message);
+      }
+    }
+  };
+
+  // User triggers for Request
+  bot.hears(['📩 Request', 'Request', 'request'], handleRequestPrompt);
+  bot.command(['request', 'ask'], async (ctx) => {
+    const text = ctx.message.text.replace(/^\/(request|ask)(@\w+)?\s*/i, '').trim();
+    if (!text) {
+      return handleRequestPrompt(ctx);
+    }
+    await processUserRequest(ctx, text);
+  });
+
+  bot.action('action_request', async (ctx) => {
     await ctx.answerCbQuery();
-    await showChannelInfo(ctx);
+    await handleRequestPrompt(ctx);
+  });
+
+  bot.action('action_cancel_request', async (ctx) => {
+    userSessions.delete(ctx.from?.id);
+    await ctx.answerCbQuery('Request cancelled');
+    await ctx.reply('❌ Request cancelled.', mainKeyboard);
+  });
+
+  // Cancel command
+  bot.command('cancel', async (ctx) => {
+    if (userSessions.has(ctx.from?.id)) {
+      userSessions.delete(ctx.from?.id);
+      return ctx.reply('❌ Action cancelled.', mainKeyboard);
+    }
+    return ctx.reply('ℹ️ No active action to cancel.', mainKeyboard);
+  });
+
+  // Admin reply button callback
+  bot.action(/^admin_reply_(\d+)$/, async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.answerCbQuery('Unauthorized');
+    const targetUserId = ctx.match[1];
+    await ctx.answerCbQuery();
+
+    userSessions.set(ctx.from.id, {
+      state: 'WAITING_ADMIN_REPLY',
+      targetUserId: targetUserId
+    });
+
+    await ctx.reply(
+      `✍️ <b>Replying to User:</b> <code>${targetUserId}</code>\n\n` +
+      `Send your reply below (text, video, photo, or document).\n` +
+      `It will be delivered directly to the user.\n\n` +
+      `<i>Type /cancel to cancel.</i>`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('❌ Cancel Reply', 'admin_cancel_reply')]
+        ])
+      }
+    );
+  });
+
+  bot.action('admin_cancel_reply', async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.answerCbQuery('Unauthorized');
+    userSessions.delete(ctx.from.id);
+    await ctx.answerCbQuery('Reply cancelled');
+    await ctx.reply('❌ Admin reply cancelled.');
+  });
+
+  // /reply <user_id> <message> command for admin
+  bot.command('reply', async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply('⛔ Admin only.');
+
+    const parts = ctx.message.text.split(' ').filter(Boolean);
+    const targetUserId = parts[1];
+    const replyText = parts.slice(2).join(' ');
+
+    if (!targetUserId || !replyText) {
+      return ctx.reply('Usage: <code>/reply &lt;user_id&gt; &lt;message&gt;</code>\nExample: <code>/reply 12345678 Sure, I uploaded the video!</code>', { parse_mode: 'HTML' });
+    }
+
+    try {
+      await bot.telegram.sendMessage(
+        targetUserId,
+        `📬 <b>Message from Admin:</b>\n\n${escapeHtml(replyText)}`,
+        { parse_mode: 'HTML' }
+      );
+      await ctx.reply(`✅ Reply sent successfully to user <code>${targetUserId}</code>!`, { parse_mode: 'HTML' });
+    } catch (err) {
+      await ctx.reply(`⚠️ Failed to deliver reply to user <code>${targetUserId}</code>: ${err.message}`, { parse_mode: 'HTML' });
+    }
   });
 
   // /stats command & button
@@ -523,20 +669,22 @@ Click below to purchase using your Telegram Stars balance:
 📖 <b>How to use:</b>
 
 /random - Get a random video from our channel
-/start - Restart bot and open menu
+/start - Restart bot and open main menu
 /stats - View your watch statistics
-/channel - View channel video count
+/request - Request a specific video or ask any doubt to admin
+/cancel - Cancel any current request or operation
 /help - Show this message
 `.trim();
 
     if (isAdmin(ctx)) {
       helpMsg += `\n\n👑 <b>Admin Instructions:</b>
 1. <b>Auto-Sync:</b> Add this bot as an Admin to your Telegram Channel. All future videos posted in the channel will automatically be indexed!
-2. <b>Forward Videos:</b> Forward any video post from your channel to this chat to index it immediately!
+2. <b>Reply to Users:</b> Swipe & reply to any user request, or use <code>/reply &lt;user_id&gt; &lt;text&gt;</code>!
 3. <b>Commands:</b>
+   • /reply &lt;user_id&gt; &lt;message&gt; - Reply directly to user
+   • /grant_sub &lt;user_id&gt; [days] - Grant VIP subscription
    • /broadcast_random - Send a random video to all clients
    • /sync_channel &lt;min_id&gt; &lt;max_id&gt; - Scan channel message IDs
-   • /add_link &lt;url&gt; - Add video via t.me channel post link
    • /clear_channel - Clear catalog`;
     }
 
@@ -547,13 +695,79 @@ Click below to purchase using your Telegram Stars balance:
   bot.hears('❓ Help', showHelp);
 
   // ==========================================
-  // FORWARD & VIDEO UPLOAD LISTENER (ADMIN)
+  // INCOMING MESSAGE LISTENER
   // ==========================================
 
-  // Detect forwarded videos from channels
   bot.on('message', async (ctx, next) => {
     const msg = ctx.message;
     if (!msg) return next();
+
+    // 0. Admin native swipe-to-reply handling
+    if (isAdmin(ctx) && msg.reply_to_message) {
+      const repliedText = msg.reply_to_message.text || msg.reply_to_message.caption || '';
+      const idMatch = repliedText.match(/User ID:\s*<code>?(\d+)<\/code>?/i) || repliedText.match(/User ID:\s*(\d+)/i);
+      if (idMatch && idMatch[1]) {
+        const targetId = idMatch[1];
+        try {
+          if (msg.text) {
+            await bot.telegram.sendMessage(
+              targetId,
+              `📬 <b>Message from Admin:</b>\n\n${escapeHtml(msg.text)}`,
+              { parse_mode: 'HTML' }
+            );
+          } else {
+            await bot.telegram.copyMessage(targetId, ctx.chat.id, msg.message_id, {
+              caption: msg.caption ? `📬 <b>Message from Admin:</b>\n\n${escapeHtml(msg.caption)}` : '📬 <b>Message from Admin</b>',
+              parse_mode: 'HTML'
+            });
+          }
+          return ctx.reply(`✅ Response delivered to user <code>${targetId}</code>!`, { parse_mode: 'HTML' });
+        } catch (err) {
+          return ctx.reply(`⚠️ Could not send reply to user <code>${targetId}</code>: ${err.message}`, { parse_mode: 'HTML' });
+        }
+      }
+    }
+
+    // 1. Admin waiting to reply via inline button
+    const adminSession = userSessions.get(ctx.from?.id);
+    if (isAdmin(ctx) && adminSession?.state === 'WAITING_ADMIN_REPLY') {
+      if (msg.text === '/cancel') {
+        userSessions.delete(ctx.from.id);
+        return ctx.reply('❌ Admin reply cancelled.');
+      }
+      const targetId = adminSession.targetUserId;
+      userSessions.delete(ctx.from.id);
+
+      try {
+        if (msg.text) {
+          await bot.telegram.sendMessage(
+            targetId,
+            `📬 <b>Message from Admin:</b>\n\n${escapeHtml(msg.text)}`,
+            { parse_mode: 'HTML' }
+          );
+        } else {
+          await bot.telegram.copyMessage(targetId, ctx.chat.id, msg.message_id, {
+            caption: msg.caption ? `📬 <b>Message from Admin:</b>\n\n${escapeHtml(msg.caption)}` : '📬 <b>Message from Admin</b>',
+            parse_mode: 'HTML'
+          });
+        }
+        return ctx.reply(`✅ Response delivered to user <code>${targetId}</code>!`, { parse_mode: 'HTML' });
+      } catch (err) {
+        return ctx.reply(`⚠️ Failed to deliver reply to user <code>${targetId}</code>: ${err.message}`, { parse_mode: 'HTML' });
+      }
+    }
+
+    // 2. User waiting to submit request / doubt
+    const userSession = userSessions.get(ctx.from?.id);
+    if (userSession?.state === 'WAITING_REQUEST') {
+      const text = msg.text || msg.caption || '';
+      // If user typed a command or tapped a main menu button, exit request mode and let next() handle it
+      if (text.startsWith('/') || ['🎲 Random Video', '⭐ 1-Day Pass', '📊 My Stats', '📩 Request', '❓ Help'].includes(text)) {
+        userSessions.delete(ctx.from.id);
+        return next();
+      }
+      return processUserRequest(ctx, text);
+    }
 
     // Check if message is a forwarded video from a channel
     const isForwarded = msg.forward_from_chat || msg.forward_origin?.chat;

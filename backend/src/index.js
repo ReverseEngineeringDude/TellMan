@@ -58,10 +58,27 @@ async function main() {
     console.log(`   - POST /api/broadcast-random-video -> Broadcast random video to all clients`);
   });
 
-  // Launch Bot Polling
-  try {
-    console.log('📡 Connecting to Telegram Bot API...');
-    const botInfo = await bot.telegram.getMe();
+  // Launch Bot Polling with automatic reconnection retries
+  let botInfo = null;
+  let attempts = 0;
+  const maxAttempts = 10;
+
+  while (!botInfo && attempts < maxAttempts) {
+    attempts++;
+    try {
+      console.log(`📡 Connecting to Telegram Bot API (attempt ${attempts}/${maxAttempts})...`);
+      botInfo = await bot.telegram.getMe();
+    } catch (err) {
+      console.warn(`⚠️ Telegram connection attempt ${attempts} failed (${err.code || err.message}). Retrying in 3s...`);
+      if (err.message?.includes('404: Not Found') || err.message?.includes('401: Unauthorized')) {
+        console.error('👉 The provided BOT_TOKEN appears invalid or placeholder.');
+        break;
+      }
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+
+  if (botInfo) {
     console.log(`✅ Telegram Bot verified: @${botInfo.username} (${botInfo.first_name}) [ID: ${botInfo.id}]`);
 
     // Sync from Firestore if enabled
@@ -94,13 +111,8 @@ async function main() {
     }).catch(err => {
       console.error('⚠️ Polling error:', err.message);
     });
-
-  } catch (error) {
-    console.error('⚠️ Could not connect to Telegram:', error);
-    if (error.message.includes('404: Not Found') || error.message.includes('401: Unauthorized')) {
-      console.error('👉 The provided BOT_TOKEN appears invalid or placeholder.');
-      console.error('   Please replace it with a valid token from @BotFather in your .env file.');
-    }
+  } else {
+    console.error('❌ Could not connect to Telegram Bot API after retries.');
     console.log(`ℹ️ HTTP API Server remains online at http://localhost:${PORT}`);
   }
 
