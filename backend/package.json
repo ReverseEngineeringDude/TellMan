@@ -1,0 +1,32 @@
+{
+  "name": "tellman-telegram-bot",
+  "version": "1.0.0",
+  "description": "Telegram Bot that sends videos to clients with interactive menu, auto-subscription, broadcast, and REST API",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "index:channel": "node src/runIndexer.js",
+    "test": "node test/bot.test.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "telegraf",
+    "video",
+    "broadcast"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "firebase-admin": "^14.5.1",
+    "telegraf": "^4.16.3"
+  }
+}

@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment secrets (NEVER commit your bot token or private chat IDs)
+.env
+.env.local
+.env.*.local
+firebase.json
+firebase*.json
+*serviceAccount*.json
+credentials.json
+
+# Allow example env file
+!.env.example
+
+# Temporary checkpoints & runtime client data
+data/index_checkpoint.json
+data/clients.json
+data/stats.json
+
+# Operating System files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo

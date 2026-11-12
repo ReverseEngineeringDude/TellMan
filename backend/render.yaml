@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: tellman-telegram-bot
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_CHAT_ID
+        sync: false
+      - key: CHANNEL_ID
+        sync: false
+      - key: STARS_1DAY_PRICE
+        value: "50"
+      - key: FREE_VIDEOS_LIMIT
+        value: "1"
+      - key: AUTO_SEND_ON_START
+        value: "true"
+      - key: PORT
+        value: "10000"
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
