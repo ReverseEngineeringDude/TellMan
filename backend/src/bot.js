@@ -18,6 +18,15 @@ import {
   broadcastRandomVideo,
   clearChannelVideos
 } from './channelManager.js';
+import {
+  initChannelRegistry,
+  getChannels,
+  getChannel,
+  isChannelApproved,
+  registerOrUpdateChannel,
+  setChannelStatus,
+  removeChannel
+} from './channelRegistry.js';
 
 export function createBot(token) {
   if (!token) {
@@ -28,6 +37,9 @@ export function createBot(token) {
   const adminChatId = process.env.ADMIN_CHAT_ID ? String(process.env.ADMIN_CHAT_ID) : null;
   const configuredChannel = process.env.CHANNEL_ID || process.env.TELEGRAM_CHANNEL;
   const autoSendOnStart = process.env.AUTO_SEND_ON_START === 'true';
+
+  // Initialize Channel Registry with configured default channel
+  initChannelRegistry(configuredChannel, 'Collections');
 
   // Global Error Handler to ensure the bot never crashes
   bot.catch((err, ctx) => {
@@ -88,12 +100,26 @@ export function createBot(token) {
     return null;
   };
 
-  // Automatically index any video posted in channels where the bot is added as admin
+  // Index videos ONLY from channels explicitly connected & approved by admin
   bot.on('channel_post', async (ctx) => {
     const post = ctx.channelPost;
-    const extracted = extractVideoMedia(post);
+    if (!post?.chat) return;
 
-    if (post && extracted) {
+    // Strict Check: ONLY index if channel is explicitly approved by admin
+    if (!isChannelApproved(post.chat.id)) {
+      console.log(`[ChannelPost] Ignored post from unapproved channel "${post.chat.title || post.chat.id}" (${post.chat.id})`);
+      registerOrUpdateChannel({
+        id: post.chat.id,
+        title: post.chat.title || '',
+        username: post.chat.username ? `@${post.chat.username}` : '',
+        type: 'channel',
+        status: 'pending'
+      });
+      return;
+    }
+
+    const extracted = extractVideoMedia(post);
+    if (extracted) {
       const media = extracted.media;
       const result = addChannelVideo({
         fileId: media.file_id,
@@ -115,8 +141,10 @@ export function createBot(token) {
 
   bot.on('edited_channel_post', async (ctx) => {
     const post = ctx.channelPost;
+    if (!post?.chat || !isChannelApproved(post.chat.id)) return;
+
     const extracted = extractVideoMedia(post);
-    if (post && extracted) {
+    if (extracted) {
       const media = extracted.media;
       addChannelVideo({
         fileId: media.file_id,
@@ -132,27 +160,82 @@ export function createBot(token) {
     }
   });
 
-  // Automatically detect when bot is added to a channel as Admin
+  // Detect when bot is added to a channel or group (Requires Manual Admin Connection)
   bot.on('my_chat_member', async (ctx) => {
     const member = ctx.myChatMember;
     const chat = member?.chat;
     const newStatus = member?.new_chat_member?.status;
 
-    if (chat && (newStatus === 'administrator' || newStatus === 'member')) {
-      const channelIdentifier = chat.username ? `@${chat.username}` : chat.id;
-      console.log(`[ChannelConnect] Bot added to ${chat.type} "${chat.title}" (${channelIdentifier})`);
+    if (!chat) return;
 
-      // Notify the admin directly so they know the connection succeeded
+    // Bot removed or left
+    if (newStatus === 'kicked' || newStatus === 'left') {
+      setChannelStatus(chat.id, 'left');
+      console.log(`[ChannelRegistry] Bot was removed from ${chat.type} "${chat.title}" (${chat.id})`);
       if (adminChatId) {
         await bot.telegram.sendMessage(
           adminChatId,
-          `🎉 <b>Channel Connected Successfully!</b>\n\n` +
-          `• <b>Channel Name:</b> ${chat.title}\n` +
-          `• <b>Channel ID:</b> <code>${chat.id}</code>\n` +
-          `• <b>Username:</b> ${chat.username ? `@${chat.username}` : 'Private channel'}\n\n` +
-          `Any video you post in this channel will now automatically be indexed and sent to your clients!`,
+          `🚪 <b>Bot Removed from ${chat.type.toUpperCase()}</b>\n\n` +
+          `• <b>Title:</b> ${escapeHtml(chat.title || 'Untitled')}\n` +
+          `• <b>ID:</b> <code>${chat.id}</code>`,
           { parse_mode: 'HTML' }
         ).catch(() => {});
+      }
+      return;
+    }
+
+    if (newStatus === 'administrator' || newStatus === 'member') {
+      const defaultChannel = configuredChannel;
+      const isPreApproved = defaultChannel && String(chat.id) === String(defaultChannel);
+
+      const chRecord = registerOrUpdateChannel({
+        id: chat.id,
+        title: chat.title || 'Untitled',
+        username: chat.username ? `@${chat.username}` : '',
+        type: chat.type,
+        addedBy: member.from ? { id: member.from.id, name: member.from.first_name } : null,
+        status: isPreApproved ? 'active' : 'pending' // Manual approval required for any new channel/group!
+      });
+
+      console.log(`[ChannelRegistry] Bot added to ${chat.type} "${chat.title}" (${chat.id}). Status: ${chRecord.status}`);
+
+      if (adminChatId) {
+        if (chRecord.status === 'active') {
+          await bot.telegram.sendMessage(
+            adminChatId,
+            `✅ <b>Primary Channel Connected!</b>\n\n` +
+            `• <b>Title:</b> <b>${escapeHtml(chat.title)}</b>\n` +
+            `• <b>ID:</b> <code>${chat.id}</code>\n` +
+            `• <b>Type:</b> <code>${chat.type}</code>\n` +
+            `• <b>Status:</b> 🟢 Active (Approved)`,
+            { parse_mode: 'HTML' }
+          ).catch(() => {});
+        } else {
+          // Manual connection required!
+          await bot.telegram.sendMessage(
+            adminChatId,
+            `🔔 <b>New ${chat.type.toUpperCase()} Joined — Admin Approval Required</b>\n\n` +
+            `• <b>Title:</b> <b>${escapeHtml(chat.title || 'Untitled')}</b>\n` +
+            `• <b>ID:</b> <code>${chat.id}</code>\n` +
+            `• <b>Type:</b> <code>${chat.type}</code>\n` +
+            `• <b>Username:</b> ${chat.username ? `@${chat.username}` : 'Private'}\n` +
+            `• <b>Added By:</b> ${member.from?.first_name || 'Unknown'} (ID: <code>${member.from?.id || 'N/A'}</code>)\n` +
+            `• <b>Status:</b> ⏳ <b>Pending (Disconnected)</b>\n\n` +
+            `⚠️ <i>Auto-connection is DISABLED. Videos will NOT be indexed and groups CANNOT access videos until you manually connect it.</i>`,
+            {
+              parse_mode: 'HTML',
+              ...Markup.inlineKeyboard([
+                [
+                  Markup.button.callback('✅ Connect Channel', `admin_connect_channel_${chat.id}`),
+                  Markup.button.callback('❌ Keep Disconnected', `admin_disconnect_channel_${chat.id}`)
+                ],
+                [
+                  Markup.button.callback('🚪 Make Bot Leave Chat', `admin_leave_channel_${chat.id}`)
+                ]
+              ])
+            }
+          ).catch(() => {});
+        }
       }
     }
   });
@@ -176,6 +259,19 @@ export function createBot(token) {
 
   // /start command
   bot.command('start', async (ctx) => {
+    // Block unapproved groups from using /start
+    if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
+      if (!isChannelApproved(ctx.chat.id)) {
+        return ctx.reply(
+          `⛔ <b>Group Not Authorized</b>\n\n` +
+          `This group is not approved by the administrator.\n` +
+          `Group ID: <code>${ctx.chat.id}</code>\n\n` +
+          `<i>Only the administrator can manually connect this group using /connect_channel.</i>`,
+          { parse_mode: 'HTML' }
+        );
+      }
+    }
+
     const user = ctx.from;
     registerClient(user);
     const videoCount = getChannelVideoCount();
@@ -227,8 +323,21 @@ I deliver high-definition random videos directly from our Telegram channel.
     }
   });
 
-  // /random & /video commands with subscription paywall
+  // /random & /video commands with subscription paywall & group authorization
   const handleRandomVideo = async (ctx) => {
+    // 1. Group / Channel authorization check
+    if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
+      if (!isChannelApproved(ctx.chat.id)) {
+        return ctx.reply(
+          `⛔ <b>Group Not Authorized</b>\n\n` +
+          `This group is not authorized to receive videos.\n` +
+          `Group ID: <code>${ctx.chat.id}</code>\n\n` +
+          `<i>Only the administrator can manually connect this group using /connect_channel.</i>`,
+          { parse_mode: 'HTML' }
+        );
+      }
+    }
+
     const access = canUserAccessVideo(ctx.chat.id);
     const starsPrice = parseInt(process.env.STARS_1DAY_PRICE || '50', 10);
 
@@ -568,12 +677,15 @@ ${escapeHtml(userMessageText || '(Media attached)')}
     if (isAdmin(ctx)) {
       const globalStats = getStats();
       const videoCount = getChannelVideoCount();
+      const allChannels = getChannels();
+      const activeChannels = getChannels('active');
 
       const adminStatsMsg = `
 👑 <b>Admin Control & Channel Stats</b>
 
 👥 <b>Total Clients:</b> ${globalStats.totalClients}
 🟢 <b>Active Subscribers:</b> ${globalStats.activeClients}
+📡 <b>Connected Channels:</b> ${activeChannels.length} active / ${allChannels.length} total
 📼 <b>Channel Videos in Catalog:</b> ${videoCount}
 🎥 <b>Total Videos Delivered:</b> ${globalStats.totalVideosSent}
 📢 <b>Broadcasts Completed:</b> ${globalStats.broadcastsCount}
@@ -581,7 +693,10 @@ ${escapeHtml(userMessageText || '(Media attached)')}
 
       const adminKeyboard = Markup.inlineKeyboard([
         [Markup.button.callback('🎲 Broadcast Random to All', 'admin_prompt_bcast_random')],
-        [Markup.button.callback('📋 View Clients', 'admin_list_clients')]
+        [
+          Markup.button.callback('📋 View Clients', 'admin_list_clients'),
+          Markup.button.callback('📡 Joined Channels', 'admin_list_channels')
+        ]
       ]);
 
       return ctx.reply(adminStatsMsg, { parse_mode: 'HTML', ...adminKeyboard });
@@ -678,9 +793,13 @@ ${escapeHtml(userMessageText || '(Media attached)')}
 
     if (isAdmin(ctx)) {
       helpMsg += `\n\n👑 <b>Admin Instructions:</b>
-1. <b>Auto-Sync:</b> Add this bot as an Admin to your Telegram Channel. All future videos posted in the channel will automatically be indexed!
+1. <b>Manual Channel Connect:</b> When adding this bot to a channel or group, it starts as Disconnected. Use <code>/channels</code> or <code>/connect_channel &lt;id&gt;</code> to connect it!
 2. <b>Reply to Users:</b> Swipe & reply to any user request, or use <code>/reply &lt;user_id&gt; &lt;text&gt;</code>!
 3. <b>Commands:</b>
+   • /channels - View joined channels/groups details & status
+   • /connect_channel &lt;id&gt; - Connect & allow channel/group
+   • /disconnect_channel &lt;id&gt; - Disconnect channel/group
+   • /leave_channel &lt;id&gt; - Force bot to leave a channel or group
    • /reply &lt;user_id&gt; &lt;message&gt; - Reply directly to user
    • /grant_sub &lt;user_id&gt; [days] - Grant VIP subscription
    • /broadcast_random - Send a random video to all clients
@@ -994,6 +1113,156 @@ ${escapeHtml(userMessageText || '(Media attached)')}
   bot.action('admin_cancel', async (ctx) => {
     await ctx.answerCbQuery('Cancelled');
     await ctx.reply('❌ Action cancelled.');
+  });
+
+  // ==========================================
+  // ADMIN CHANNEL MANAGEMENT
+  // ==========================================
+
+  // List joined channels & groups for admin with interactive buttons
+  const showJoinedChannels = async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply('⛔ Admin only.');
+
+    const channels = getChannels();
+    if (channels.length === 0) {
+      return ctx.reply('📡 <b>No channels or groups registered yet.</b>\n\nAdd the bot to your channel as Admin and use /connect_channel to connect it.', { parse_mode: 'HTML' });
+    }
+
+    let text = `📡 <b>Joined Channels & Groups (${channels.length})</b>\n\n`;
+    const inlineButtons = [];
+
+    channels.forEach((c, index) => {
+      const isApproved = c.status === 'active';
+      const statusIcon = isApproved ? '🟢 Connected (Active)' : (c.status === 'pending' ? '⏳ Pending Approval' : '⚪ Disconnected');
+      const usernameText = c.username ? `@${c.username.replace(/^@/, '')}` : 'Private';
+
+      text += `${index + 1}. <b>${escapeHtml(c.title)}</b> [<code>${c.type || 'channel'}</code>]\n`;
+      text += `   • <b>ID:</b> <code>${c.id}</code>\n`;
+      text += `   • <b>Username:</b> ${usernameText}\n`;
+      text += `   • <b>Status:</b> ${statusIcon}\n`;
+      text += `   • <b>Catalog Videos:</b> ${c.videosCount || 0}\n`;
+      text += `   • <b>Added:</b> ${c.addedAt ? new Date(c.addedAt).toLocaleDateString() : 'N/A'}\n\n`;
+
+      const btnRow = [];
+      const shortTitle = (c.title || 'Chat').slice(0, 12);
+      if (!isApproved) {
+        btnRow.push(Markup.button.callback(`✅ Connect: ${shortTitle}`, `admin_connect_channel_${c.id}`));
+      } else {
+        btnRow.push(Markup.button.callback(`⏸️ Disconnect: ${shortTitle}`, `admin_disconnect_channel_${c.id}`));
+      }
+      btnRow.push(Markup.button.callback(`🚪 Leave`, `admin_leave_channel_${c.id}`));
+      inlineButtons.push(btnRow);
+    });
+
+    text += `⚙️ <b>Admin Commands:</b>\n` +
+      `• <code>/connect_channel &lt;id&gt;</code> - Connect & allow\n` +
+      `• <code>/disconnect_channel &lt;id&gt;</code> - Disconnect\n` +
+      `• <code>/leave_channel &lt;id&gt;</code> - Force bot to leave chat`;
+
+    inlineButtons.push([Markup.button.callback('🔄 Refresh Channel List', 'admin_list_channels')]);
+
+    await ctx.reply(text, {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard(inlineButtons)
+    });
+  };
+
+  bot.command(['channels', 'channel_list', 'manage_channels'], showJoinedChannels);
+
+  bot.action('admin_list_channels', async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.answerCbQuery('Unauthorized');
+    await ctx.answerCbQuery();
+    await showJoinedChannels(ctx);
+  });
+
+  bot.action(/^admin_connect_channel_(-?\d+)$/, async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.answerCbQuery('Unauthorized');
+    const targetChannelId = ctx.match[1];
+    await ctx.answerCbQuery('Connecting channel...');
+
+    const ch = setChannelStatus(targetChannelId, 'active');
+    await ctx.reply(
+      `✅ <b>Channel Connected!</b>\n\n` +
+      `• <b>Title:</b> <b>${escapeHtml(ch?.title || 'Channel')}</b>\n` +
+      `• <b>ID:</b> <code>${targetChannelId}</code>\n` +
+      `• <b>Status:</b> 🟢 Active (Approved)\n\n` +
+      `Videos from this channel will now be indexed and groups are authorized to receive videos!`,
+      { parse_mode: 'HTML' }
+    );
+  });
+
+  bot.action(/^admin_disconnect_channel_(-?\d+)$/, async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.answerCbQuery('Unauthorized');
+    const targetChannelId = ctx.match[1];
+    await ctx.answerCbQuery('Disconnecting channel...');
+
+    const ch = setChannelStatus(targetChannelId, 'disconnected');
+    await ctx.reply(
+      `⏸️ <b>Channel Disconnected</b>\n\n` +
+      `• <b>Title:</b> <b>${escapeHtml(ch?.title || 'Channel')}</b>\n` +
+      `• <b>ID:</b> <code>${targetChannelId}</code>\n` +
+      `• <b>Status:</b> ⚪ Disconnected\n\n` +
+      `Videos from this channel will no longer be indexed or served to groups.`,
+      { parse_mode: 'HTML' }
+    );
+  });
+
+  bot.action(/^admin_leave_channel_(-?\d+)$/, async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.answerCbQuery('Unauthorized');
+    const targetChannelId = ctx.match[1];
+    await ctx.answerCbQuery('Leaving chat...');
+
+    try {
+      await bot.telegram.leaveChat(targetChannelId);
+      setChannelStatus(targetChannelId, 'left');
+      await ctx.reply(`🚪 Bot has left chat <code>${targetChannelId}</code>.`, { parse_mode: 'HTML' });
+    } catch (err) {
+      await ctx.reply(`⚠️ Could not leave chat <code>${targetChannelId}</code>: ${err.message}`, { parse_mode: 'HTML' });
+    }
+  });
+
+  bot.command(['connect_channel', 'connect'], async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply('⛔ Admin only.');
+    const parts = ctx.message.text.split(' ').filter(Boolean);
+    const targetId = parts[1];
+
+    if (!targetId) {
+      return ctx.reply('Usage: <code>/connect_channel &lt;channel_id&gt;</code>\nExample: <code>/connect_channel -1003865751619</code>', { parse_mode: 'HTML' });
+    }
+
+    const ch = setChannelStatus(targetId, 'active');
+    await ctx.reply(`✅ Channel <b>${escapeHtml(ch?.title || targetId)}</b> (<code>${targetId}</code>) is now CONNECTED and active!`, { parse_mode: 'HTML' });
+  });
+
+  bot.command(['disconnect_channel', 'disconnect'], async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply('⛔ Admin only.');
+    const parts = ctx.message.text.split(' ').filter(Boolean);
+    const targetId = parts[1];
+
+    if (!targetId) {
+      return ctx.reply('Usage: <code>/disconnect_channel &lt;channel_id&gt;</code>\nExample: <code>/disconnect_channel -1003865751619</code>', { parse_mode: 'HTML' });
+    }
+
+    const ch = setChannelStatus(targetId, 'disconnected');
+    await ctx.reply(`⏸️ Channel <b>${escapeHtml(ch?.title || targetId)}</b> (<code>${targetId}</code>) is now DISCONNECTED.`, { parse_mode: 'HTML' });
+  });
+
+  bot.command(['leave_channel', 'leave'], async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply('⛔ Admin only.');
+    const parts = ctx.message.text.split(' ').filter(Boolean);
+    const targetId = parts[1];
+
+    if (!targetId) {
+      return ctx.reply('Usage: <code>/leave_channel &lt;channel_id&gt;</code>\nExample: <code>/leave_channel -1003865751619</code>', { parse_mode: 'HTML' });
+    }
+
+    try {
+      await bot.telegram.leaveChat(targetId);
+      setChannelStatus(targetId, 'left');
+      await ctx.reply(`🚪 Bot has successfully left chat <code>${targetId}</code>.`, { parse_mode: 'HTML' });
+    } catch (err) {
+      await ctx.reply(`⚠️ Failed to leave chat <code>${targetId}</code>: ${err.message}`, { parse_mode: 'HTML' });
+    }
   });
 
   return bot;

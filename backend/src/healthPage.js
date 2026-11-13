@@ -8,6 +8,7 @@ export function renderHealthPage(data) {
     uptimeSeconds = Math.floor(process.uptime()),
     botInfo = {},
     database = {},
+    channels = {},
     stats = {},
     channelVideosCount = 0,
     serverEnv = {}
@@ -320,8 +321,12 @@ export function renderHealthPage(data) {
         <div class="metric-label">${botInfo.firstName || 'Chugan bot'} (ID: ${botInfo.id || '6557438353'})</div>
         <div class="info-list">
           <div class="info-item">
-            <span class="info-key">Connected Channel</span>
-            <span class="info-val">${botInfo.channelId || '-1003865751619'}</span>
+            <span class="info-key">Connected Channels</span>
+            <span class="info-val">${channels.active || 1} active (${channels.total || 1} joined)</span>
+          </div>
+          <div class="info-item">
+            <span class="info-key">Channel Connection</span>
+            <span class="info-val" style="color: #38bdf8;">🔒 Admin Manual</span>
           </div>
           <div class="info-item">
             <span class="info-key">Stars 1-Day Price</span>
@@ -452,6 +457,10 @@ export function renderHealthPage(data) {
           <div class="info-item">
             <span class="info-key">Catalog JSON</span>
             <span class="info-val"><a href="/api/channel-videos" style="color: #38bdf8;">/api/channel-videos</a></span>
+          </div>
+          <div class="info-item">
+            <span class="info-key">Channels API</span>
+            <span class="info-val"><a href="/api/channels" style="color: #38bdf8;">/api/channels</a></span>
           </div>
         </div>
       </div>

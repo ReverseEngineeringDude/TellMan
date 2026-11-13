@@ -131,6 +131,41 @@ const access = canUserAccessVideo(mockUser.id);
 assert.strictEqual(access.allowed, true, 'Subscribed user must have video access');
 console.log('✅ Test 8 Passed: User video access permission check works');
 
+// Channel Registry Tests
+const {
+  initChannelRegistry,
+  getChannels,
+  getChannel,
+  isChannelApproved,
+  registerOrUpdateChannel,
+  setChannelStatus,
+  removeChannel
+} = await import('../src/channelRegistry.js');
+
+// Test 9: Channel registry initialization and manual connection requirement
+initChannelRegistry('-1003865751619', 'Collections');
+assert.strictEqual(isChannelApproved('-1003865751619'), true, 'Configured default channel should be approved');
+assert.strictEqual(isChannelApproved('-1009999999999'), false, 'Unknown group must NOT be approved');
+console.log('✅ Test 9 Passed: Channel registry default approval & unknown group restriction works');
+
+// Test 10: New channel or group defaults to pending (not auto-connected)
+const pendingGroup = registerOrUpdateChannel({
+  id: '-1009999999999',
+  title: 'Random Telegram Group',
+  type: 'supergroup'
+});
+assert.strictEqual(pendingGroup.status, 'pending', 'Newly joined group must start as pending');
+assert.strictEqual(isChannelApproved('-1009999999999'), false, 'Pending group must not have video access');
+console.log('✅ Test 10 Passed: Newly joined group is quarantined in pending state');
+
+// Test 11: Admin manual connect and disconnect
+setChannelStatus('-1009999999999', 'active');
+assert.strictEqual(isChannelApproved('-1009999999999'), true, 'Manually connected group should now be approved');
+setChannelStatus('-1009999999999', 'disconnected');
+assert.strictEqual(isChannelApproved('-1009999999999'), false, 'Disconnected group should lose access');
+removeChannel('-1009999999999');
+console.log('✅ Test 11 Passed: Admin manual connect, disconnect, and removal works properly');
+
 // Clean up: Restore backup
 clearChannelVideos();
 backupVideos.forEach(v => addChannelVideo(v));

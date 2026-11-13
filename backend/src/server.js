@@ -17,6 +17,7 @@ import {
 } from './channelManager.js';
 import { isFirestoreEnabled } from './firebase.js';
 import { renderHealthPage } from './healthPage.js';
+import { getChannels, getChannel, setChannelStatus } from './channelRegistry.js';
 
 export function createServer(bot) {
   const app = express();
@@ -27,10 +28,14 @@ export function createServer(bot) {
   // Compile unified health data
   const getHealthData = () => {
     const memory = process.memoryUsage();
+    const allChannels = getChannels();
+    const activeChannels = allChannels.filter(c => c.status === 'active');
+    const pendingChannels = allChannels.filter(c => c.status === 'pending');
+
     return {
       status: 'healthy',
       service: 'TellMan Telegram Channel Random Video Bot',
-      version: '1.2.0',
+      version: '1.3.0',
       timestamp: new Date().toISOString(),
       uptimeSeconds: Math.floor(process.uptime()),
       botInfo: {
@@ -46,6 +51,12 @@ export function createServer(bot) {
         projectId: process.env.FIREBASE_PROJECT_ID || 'tellman-1a7ea'
       },
       channelVideosCount: getChannelVideoCount(),
+      channels: {
+        total: allChannels.length,
+        active: activeChannels.length,
+        pending: pendingChannels.length,
+        list: allChannels
+      },
       stats: getStats(),
       serverEnv: {
         port: process.env.PORT || 3001,
@@ -126,6 +137,30 @@ export function createServer(bot) {
     }
 
     res.json({ success: true, subscription: sub });
+  });
+
+  // Get registered channels & groups with details and statuses
+  app.get('/api/channels', (req, res) => {
+    const status = req.query.status;
+    const channels = getChannels(status);
+    res.json({
+      total: channels.length,
+      channels
+    });
+  });
+
+  // Manually connect/approve a channel or group
+  app.post('/api/channels/:id/connect', (req, res) => {
+    const { id } = req.params;
+    const ch = setChannelStatus(id, 'active');
+    res.json({ success: true, message: `Channel ${id} connected`, channel: ch });
+  });
+
+  // Manually disconnect a channel or group
+  app.post('/api/channels/:id/disconnect', (req, res) => {
+    const { id } = req.params;
+    const ch = setChannelStatus(id, 'disconnected');
+    res.json({ success: true, message: `Channel ${id} disconnected`, channel: ch });
   });
 
   // Get channel video catalog

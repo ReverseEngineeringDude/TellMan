@@ -2,6 +2,10 @@ import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 let db = null;
 let isInitialized = false;
@@ -20,9 +24,13 @@ export function initFirestore() {
     }
     // Option 2: Local JSON file path (e.g. ./firebase.json)
     else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
-      const resolvedPath = path.isAbsolute(process.env.FIREBASE_SERVICE_ACCOUNT_PATH)
+      let resolvedPath = path.isAbsolute(process.env.FIREBASE_SERVICE_ACCOUNT_PATH)
         ? process.env.FIREBASE_SERVICE_ACCOUNT_PATH
         : path.resolve(process.cwd(), process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
+
+      if (!fs.existsSync(resolvedPath)) {
+        resolvedPath = path.resolve(__dirname, '..', process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
+      }
 
       if (fs.existsSync(resolvedPath)) {
         const fileContent = JSON.parse(fs.readFileSync(resolvedPath, 'utf-8'));
@@ -31,8 +39,11 @@ export function initFirestore() {
       }
     }
     // Option 3: Default check for firebase.json or serviceAccountKey.json
-    else if (fs.existsSync(path.resolve(process.cwd(), 'firebase.json'))) {
-      const fileContent = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'firebase.json'), 'utf-8'));
+    else if (fs.existsSync(path.resolve(process.cwd(), 'firebase.json')) || fs.existsSync(path.resolve(__dirname, '../firebase.json'))) {
+      const p = fs.existsSync(path.resolve(process.cwd(), 'firebase.json'))
+        ? path.resolve(process.cwd(), 'firebase.json')
+        : path.resolve(__dirname, '../firebase.json');
+      const fileContent = JSON.parse(fs.readFileSync(p, 'utf-8'));
       credential = cert(fileContent);
       console.log(`[Firestore] Found credentials in firebase.json for project "${fileContent.project_id}"...`);
     }

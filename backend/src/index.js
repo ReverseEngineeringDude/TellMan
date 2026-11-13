@@ -8,6 +8,7 @@ import { getStats, loadClientsFromFirestore } from './storage.js';
 import { getVideoConfig } from './videoManager.js';
 import { getChannelVideoCount } from './channelManager.js';
 import { isFirestoreEnabled } from './firebase.js';
+import { loadChannelsFromFirestore, getChannels } from './channelRegistry.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -84,14 +85,18 @@ async function main() {
 
     // Sync from Firestore if enabled
     await loadClientsFromFirestore();
+    await loadChannelsFromFirestore();
 
     const stats = getStats();
     const videoConfig = getVideoConfig();
     const channelVideos = getChannelVideoCount();
     const channelName = process.env.CHANNEL_ID || process.env.TELEGRAM_CHANNEL || 'Not set';
+    const channels = getChannels();
+    const activeChannels = getChannels('active');
 
     console.log('\n📊 Current Status:');
     console.log(`   - Connected Channel:    ${channelName}`);
+    console.log(`   - Joined Channels:      ${activeChannels.length} active (${channels.length} total)`);
     console.log(`   - Channel Videos Total: ${channelVideos}`);
     console.log(`   - Cloud Database:       ${isFirestoreEnabled() ? '🟢 Google Cloud Firestore (Active)' : '⚪ Local JSON Storage'}`);
     console.log(`   - Registered Clients:   ${stats.totalClients}`);
