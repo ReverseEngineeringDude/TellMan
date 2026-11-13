@@ -51,9 +51,16 @@ function syncClientToFirestore(clientData) {
   const db = getFirestoreDb();
   if (!db) return;
 
+  const payload = { ...clientData };
+  // CRITICAL PROTECTION: Never send `subscription: null` to Firestore if local cache is fresh or uninitialized,
+  // so an active VIP pass in Cloud Firestore is NEVER wiped out!
+  if (!payload.subscription || !payload.subscription.isActive) {
+    delete payload.subscription;
+  }
+
   db.collection('clients')
     .doc(String(clientData.id))
-    .set(clientData, { merge: true })
+    .set(payload, { merge: true })
     .catch(err => {
       console.error(`[FirestoreSyncError] Failed to sync client ${clientData.id}:`, err.message);
     });
@@ -70,15 +77,59 @@ export async function loadClientsFromFirestore() {
   try {
     const snapshot = await db.collection('clients').get();
     if (!snapshot.empty) {
-      const clients = readJsonFile(CLIENTS_FILE, {});
+      const localClients = readJsonFile(CLIENTS_FILE, {});
       snapshot.forEach(doc => {
-        clients[doc.id] = { ...clients[doc.id], ...doc.data() };
+        const remote = doc.data();
+        const local = localClients[doc.id] || {};
+
+        // Merge intelligently: preserve active subscriptions from either side
+        let bestSubscription = remote.subscription || local.subscription || null;
+        if (remote.subscription?.expiresAt && local.subscription?.expiresAt) {
+          const remoteExp = new Date(remote.subscription.expiresAt).getTime();
+          const localExp = new Date(local.subscription.expiresAt).getTime();
+          bestSubscription = remoteExp >= localExp ? remote.subscription : local.subscription;
+        }
+
+        localClients[doc.id] = {
+          ...local,
+          ...remote,
+          subscription: bestSubscription,
+          videosReceived: Math.max(remote.videosReceived || 0, local.videosReceived || 0),
+          freeVideosUsed: Math.max(remote.freeVideosUsed || 0, local.freeVideosUsed || 0),
+          seenVideos: Array.from(new Set([...(remote.seenVideos || []), ...(local.seenVideos || [])]))
+        };
       });
-      writeJsonFile(CLIENTS_FILE, clients);
+      writeJsonFile(CLIENTS_FILE, localClients);
       console.log(`✅ [Firestore] Synced ${snapshot.size} client(s) from Cloud Firestore.`);
     }
   } catch (err) {
     console.error('⚠️ [Firestore] Error syncing clients on boot:', err.message);
+  }
+}
+
+/**
+ * Initial load of global stats from Firestore on startup
+ */
+export async function loadStatsFromFirestore() {
+  if (!isFirestoreEnabled()) return;
+  const db = getFirestoreDb();
+  if (!db) return;
+
+  try {
+    const doc = await db.collection('stats').doc('global').get();
+    if (doc.exists) {
+      const remote = doc.data();
+      const local = readJsonFile(STATS_FILE, { videosSent: 0, broadcastsSent: 0 });
+      const merged = {
+        videosSent: Math.max(remote.videosSent || 0, local.videosSent || 0),
+        broadcastsSent: Math.max(remote.broadcastsSent || 0, local.broadcastsSent || 0),
+        lastSentAt: remote.lastSentAt || local.lastSentAt || null
+      };
+      writeJsonFile(STATS_FILE, merged);
+      console.log(`✅ [Firestore] Synced global stats from Cloud Firestore (${merged.videosSent} videos sent).`);
+    }
+  } catch (err) {
+    console.error('⚠️ [Firestore] Error syncing stats on boot:', err.message);
   }
 }
 
@@ -88,21 +139,22 @@ export async function loadClientsFromFirestore() {
 export function registerClient(user) {
   const clients = readJsonFile(CLIENTS_FILE, {});
   const idStr = String(user.id);
-  const existing = clients[idStr];
+  const existing = clients[idStr] || {};
 
   const now = new Date().toISOString();
   clients[idStr] = {
+    ...existing,
     id: user.id,
-    firstName: user.first_name || '',
-    lastName: user.last_name || '',
-    username: user.username ? `@${user.username}` : '',
+    firstName: user.first_name || existing.firstName || '',
+    lastName: user.last_name || existing.lastName || '',
+    username: user.username ? `@${user.username.replace(/^@/, '')}` : (existing.username || ''),
     isActive: true,
-    firstSeen: existing?.firstSeen || now,
+    firstSeen: existing.firstSeen || now,
     lastSeen: now,
-    videosReceived: existing?.videosReceived || 0,
-    seenVideos: existing?.seenVideos || [],
-    subscription: existing?.subscription || null,
-    freeVideosUsed: existing?.freeVideosUsed || 0
+    videosReceived: existing.videosReceived || 0,
+    seenVideos: existing.seenVideos || [],
+    subscription: existing.subscription || null,
+    freeVideosUsed: existing.freeVideosUsed || 0
   };
 
   writeJsonFile(CLIENTS_FILE, clients);
@@ -275,6 +327,68 @@ export function getSubscriptionStatus(chatId) {
 }
 
 /**
+ * Async version of getSubscriptionStatus with live Firestore fallback
+ */
+export async function getSubscriptionStatusAsync(chatId) {
+  const status = getSubscriptionStatus(chatId);
+  if (status.isSubscribed) return status;
+
+  // Fallback: If not found in local memory, check Firestore directly!
+  if (isFirestoreEnabled()) {
+    try {
+      const db = getFirestoreDb();
+      const doc = await db?.collection('clients').doc(String(chatId)).get();
+      if (doc && doc.exists) {
+        const data = doc.data();
+        if (data.subscription?.expiresAt) {
+          const now = Date.now();
+          const expires = new Date(data.subscription.expiresAt).getTime();
+          if (expires > now) {
+            // Restore client into local cache immediately!
+            const clients = readJsonFile(CLIENTS_FILE, {});
+            clients[String(chatId)] = { ...(clients[String(chatId)] || {}), ...data };
+            writeJsonFile(CLIENTS_FILE, clients);
+
+            const diffMs = expires - now;
+            const remainingHours = Math.ceil(diffMs / (1000 * 60 * 60));
+            return {
+              isSubscribed: true,
+              remainingHours,
+              expiresAt: data.subscription.expiresAt,
+              plan: data.subscription.plan
+            };
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`[FirestoreFallbackError] Failed to fetch client ${chatId}:`, err.message);
+    }
+  }
+
+  return status;
+}
+
+/**
+ * Async version of canUserAccessVideo with live Firestore fallback
+ */
+export async function canUserAccessVideoAsync(chatId) {
+  const status = await getSubscriptionStatusAsync(chatId);
+  if (status.isSubscribed) {
+    return { allowed: true, reason: 'subscribed', status };
+  }
+
+  const freeLimit = parseInt(process.env.FREE_VIDEOS_LIMIT ?? '1', 10);
+  const client = getClient(chatId);
+  const used = client?.freeVideosUsed || 0;
+
+  if (used < freeLimit) {
+    return { allowed: true, reason: 'free_trial', remainingFree: freeLimit - used, status };
+  }
+
+  return { allowed: false, reason: 'subscription_required', status };
+}
+
+/**
  * Determine if user can watch video (subscription or free trial)
  */
 export function canUserAccessVideo(chatId) {
@@ -332,11 +446,17 @@ export function recordBroadcast(recipientCount) {
 export function getStats() {
   const clients = getClients(false);
   const activeClients = clients.filter(c => c.isActive !== false);
+  const now = Date.now();
+  const subscribedClients = clients.filter(c => {
+    if (!c.subscription?.expiresAt) return false;
+    return new Date(c.subscription.expiresAt).getTime() > now;
+  });
   const stats = readJsonFile(STATS_FILE, { videosSent: 0, broadcastsSent: 0 });
 
   return {
     totalClients: clients.length,
     activeClients: activeClients.length,
+    subscribedClients: subscribedClients.length,
     inactiveClients: clients.length - activeClients.length,
     totalVideosSent: stats.videosSent || 0,
     broadcastsCount: stats.broadcastsSent || 0,

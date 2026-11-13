@@ -404,7 +404,7 @@ export function renderHealthPage(data) {
           </div>
           <div class="info-item">
             <span class="info-key">Active VIP Subscribers</span>
-            <span class="info-val">${stats.activeClients || 0}</span>
+            <span class="info-val" style="color: #10b981;">${stats.subscribedClients !== undefined ? stats.subscribedClients : (stats.activeClients || 0)}</span>
           </div>
           <div class="info-item">
             <span class="info-key">Broadcasts Sent</span>

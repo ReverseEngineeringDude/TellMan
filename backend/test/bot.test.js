@@ -166,6 +166,40 @@ assert.strictEqual(isChannelApproved('-1009999999999'), false, 'Disconnected gro
 removeChannel('-1009999999999');
 console.log('✅ Test 11 Passed: Admin manual connect, disconnect, and removal works properly');
 
+// Test 12: Restart simulation test — client and subscription recovery across disk wipe
+const {
+  loadClientsFromFirestore,
+  getSubscriptionStatusAsync,
+  canUserAccessVideoAsync
+} = await import('../src/storage.js');
+
+// 1. Activate subscription for a test user and sync
+activateSubscription(99887766, {
+  plan: 'restart_proof_pass',
+  durationMs: 48 * 3600 * 1000,
+  starsPaid: 50,
+  chargeId: 'test_restart_proof'
+});
+
+// 2. Wait 500ms to ensure Firestore write completes
+await new Promise(r => setTimeout(r, 600));
+
+// 3. Simulate severe server restart / ephemeral disk wipe by emptying clients.json
+const clientsPath = path.join(__dirname, '../data/clients.json');
+const savedLocal = fs.readFileSync(clientsPath, 'utf8');
+fs.writeFileSync(clientsPath, JSON.stringify({}, null, 2));
+
+// 4. Verify that canUserAccessVideoAsync recovers VIP access directly from Cloud Firestore even with empty disk
+const directRecovered = await canUserAccessVideoAsync(99887766);
+assert.strictEqual(directRecovered.allowed, true, 'User must recover VIP access from Cloud Firestore');
+assert.strictEqual(directRecovered.reason, 'subscribed', 'Access reason must be subscribed');
+
+// 5. Restore full database using loadClientsFromFirestore
+await loadClientsFromFirestore();
+const restoredStatus = await getSubscriptionStatusAsync(99887766);
+assert.strictEqual(restoredStatus.isSubscribed, true, 'Client subscription must be restored after boot sync');
+console.log('✅ Test 12 Passed: Restart simulation verified — client subscription fully preserved and restored');
+
 // Clean up: Restore backup
 clearChannelVideos();
 backupVideos.forEach(v => addChannelVideo(v));

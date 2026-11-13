@@ -6,7 +6,9 @@ import {
   getClient,
   activateSubscription,
   getSubscriptionStatus,
+  getSubscriptionStatusAsync,
   canUserAccessVideo,
+  canUserAccessVideoAsync,
   incrementFreeVideoUsed
 } from './storage.js';
 import { sendVideoToClient, broadcastVideo, getVideoConfig, setVideoConfig } from './videoManager.js';
@@ -275,7 +277,7 @@ export function createBot(token) {
     const user = ctx.from;
     registerClient(user);
     const videoCount = getChannelVideoCount();
-    const subStatus = getSubscriptionStatus(ctx.chat.id);
+    const subStatus = await getSubscriptionStatusAsync(ctx.chat.id);
     const starsPrice = parseInt(process.env.STARS_1DAY_PRICE || '50', 10);
 
     const subBadge = subStatus.isSubscribed
@@ -338,7 +340,7 @@ I deliver high-definition random videos directly from our Telegram channel.
       }
     }
 
-    const access = canUserAccessVideo(ctx.chat.id);
+    const access = await canUserAccessVideoAsync(ctx.chat.id);
     const starsPrice = parseInt(process.env.STARS_1DAY_PRICE || '50', 10);
 
     if (!access.allowed) {
@@ -684,7 +686,7 @@ ${escapeHtml(userMessageText || '(Media attached)')}
 👑 <b>Admin Control & Channel Stats</b>
 
 👥 <b>Total Clients:</b> ${globalStats.totalClients}
-🟢 <b>Active Subscribers:</b> ${globalStats.activeClients}
+🟢 <b>Active VIP Subscribers:</b> ${globalStats.subscribedClients}
 📡 <b>Connected Channels:</b> ${activeChannels.length} active / ${allChannels.length} total
 📼 <b>Channel Videos in Catalog:</b> ${videoCount}
 🎥 <b>Total Videos Delivered:</b> ${globalStats.totalVideosSent}
@@ -703,7 +705,7 @@ ${escapeHtml(userMessageText || '(Media attached)')}
     }
 
     const client = getClient(ctx.chat.id);
-    const subStatus = getSubscriptionStatus(ctx.chat.id);
+    const subStatus = await getSubscriptionStatusAsync(ctx.chat.id);
     const subText = subStatus.isSubscribed
       ? `🟢 Active (${subStatus.isAdmin ? 'Admin' : `Expires in ${subStatus.remainingHours}h`})`
       : `⚪ Free User (Free Videos Used: ${client?.freeVideosUsed || 0})`;

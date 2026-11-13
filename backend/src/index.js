@@ -4,7 +4,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { createBot } from './bot.js';
 import { createServer } from './server.js';
-import { getStats, loadClientsFromFirestore } from './storage.js';
+import { getStats, loadClientsFromFirestore, loadStatsFromFirestore } from './storage.js';
 import { getVideoConfig } from './videoManager.js';
 import { getChannelVideoCount } from './channelManager.js';
 import { isFirestoreEnabled } from './firebase.js';
@@ -45,10 +45,14 @@ async function main() {
   const maskedToken = BOT_TOKEN.slice(0, 8) + '...' + BOT_TOKEN.slice(-5);
   console.log(`🔑 Bot Token: [${maskedToken}]`);
 
-  // Initialize bot
-  const bot = createBot(BOT_TOKEN);
+  // 1. Restore all persistent data from Cloud Firestore FIRST before handling requests
+  console.log('🔄 Restoring persistent data from Cloud Database...');
+  await loadClientsFromFirestore();
+  await loadStatsFromFirestore();
+  await loadChannelsFromFirestore();
 
-  // Initialize API server
+  // 2. Initialize bot & API server
+  const bot = createBot(BOT_TOKEN);
   const app = createServer(bot);
   const server = app.listen(PORT, () => {
     console.log(`🌐 HTTP API Server running at http://localhost:${PORT}`);
@@ -60,7 +64,7 @@ async function main() {
     console.log(`   - POST /api/broadcast-random-video -> Broadcast random video to all clients`);
   });
 
-  // Launch Bot Polling with automatic reconnection retries
+  // 3. Launch Bot Polling with automatic reconnection retries
   let botInfo = null;
   let attempts = 0;
   const maxAttempts = 10;
@@ -83,10 +87,6 @@ async function main() {
   if (botInfo) {
     console.log(`✅ Telegram Bot verified: @${botInfo.username} (${botInfo.first_name}) [ID: ${botInfo.id}]`);
 
-    // Sync from Firestore if enabled
-    await loadClientsFromFirestore();
-    await loadChannelsFromFirestore();
-
     const stats = getStats();
     const videoConfig = getVideoConfig();
     const channelVideos = getChannelVideoCount();
@@ -100,6 +100,7 @@ async function main() {
     console.log(`   - Channel Videos Total: ${channelVideos}`);
     console.log(`   - Cloud Database:       ${isFirestoreEnabled() ? '🟢 Google Cloud Firestore (Active)' : '⚪ Local JSON Storage'}`);
     console.log(`   - Registered Clients:   ${stats.totalClients}`);
+    console.log(`   - Active Subscribers:   ${stats.subscribedClients}`);
     console.log(`   - Total Videos Sent:    ${stats.totalVideosSent}`);
     console.log(`\n💬 Bot is ONLINE! In Telegram, search for @${botInfo.username} and send /start to test.\n`);
 
